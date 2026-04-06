@@ -1694,6 +1694,78 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
         async def slash_btw(interaction: discord.Interaction, question: str):
             await self._run_simple_slash(interaction, f"/btw {question}")
+        # Register installed skills as native slash commands (parity with Telegram v0.7.0).
+        # Discord allows up to 100 application commands per guild; we respect that cap.
+        DISCORD_SLASH_CMD_LIMIT = 100
+        try:
+            from agent.skill_commands import scan_skill_commands
+            from agent.skill_utils import get_disabled_skill_names
+            from tools.skills_tool import SKILLS_DIR
+
+            _platform_disabled: set = set()
+            try:
+                _platform_disabled = get_disabled_skill_names(platform="discord")
+            except Exception:
+                pass
+
+            skill_cmds = scan_skill_commands()
+            _skills_dir = str(SKILLS_DIR.resolve())
+            _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+
+            existing_cmd_count = len(tree.get_commands())
+            remaining_slots = max(0, DISCORD_SLASH_CMD_LIMIT - existing_cmd_count)
+            skipped_count = 0
+
+            for cmd_key in sorted(skill_cmds):
+                if remaining_slots <= 0:
+                    skipped_count += 1
+                    continue
+
+                info = skill_cmds[cmd_key]
+
+                skill_path = info.get("skill_md_path", "")
+                if not skill_path.startswith(_skills_dir):
+                    continue
+                if skill_path.startswith(_hub_dir):
+                    continue
+
+                skill_name = info.get("name", "")
+                if skill_name in _platform_disabled:
+                    continue
+
+                raw_name = cmd_key.lstrip("/")
+                discord_name = raw_name[:32]
+
+                if tree.get_command(discord_name) is not None:
+                    continue
+
+                description = (info.get("description") or f"Invoke the {skill_name} skill")[:100]
+
+                def _make_skill_handler(key: str):
+                    async def _skill_slash(interaction: discord.Interaction, args: str = ""):
+                        await self._run_simple_slash(interaction, f"{key} {args}".strip())
+                    return _skill_slash
+
+                handler = _make_skill_handler(cmd_key)
+                handler.__name__ = f"skill_{discord_name.replace('-', '_')}"
+
+                cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=description,
+                    callback=handler,
+                )
+                discord.app_commands.describe(args="Optional arguments for the skill")(cmd)
+                tree.add_command(cmd)
+                remaining_slots -= 1
+
+            if skipped_count:
+                logger.warning(
+                    "[%s] Discord slash command limit reached (100): %d skill(s) not registered",
+                    self.name, skipped_count,
+                )
+        except Exception as _skill_reg_err:
+            logger.warning("[%s] Failed to register skill slash commands: %s", self.name, _skill_reg_err)
+
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
