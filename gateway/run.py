@@ -2242,13 +2242,17 @@ class GatewayRunner:
             from tools.process_registry import process_registry
             while process_registry.pending_watchers:
                 watcher = process_registry.pending_watchers.pop(0)
-                asyncio.create_task(self._run_process_watcher(watcher))
+                task = asyncio.create_task(self._run_process_watcher(watcher))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher for proactive memory flushing
-        asyncio.create_task(self._session_expiry_watcher())
+        task = asyncio.create_task(self._session_expiry_watcher())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -2257,7 +2261,9 @@ class GatewayRunner:
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        task = asyncio.create_task(self._platform_reconnect_watcher())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         logger.info("Press Ctrl+C to stop")
         
@@ -11135,7 +11141,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 logger.info("Shutdown diagnostic — no other hermes processes found")
         except Exception:
             pass
-        asyncio.create_task(runner.stop())
+        _stop_task = asyncio.create_task(runner.stop())
+        _stop_task.add_done_callback(lambda t: logger.error("Gateway stop failed: %s", t.exception()) if not t.cancelled() and t.exception() else None)
 
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)
