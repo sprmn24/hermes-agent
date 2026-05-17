@@ -480,19 +480,27 @@ class SimplexAdapter(BasePlatformAdapter):
             self._pending_corr_ids -= set(to_remove)
         return corr_id
 
-    async def _send_ws(self, payload: dict) -> None:
-        """Send a JSON payload over the WebSocket, queuing if not yet connected."""
+    async def _send_ws(self, payload: dict) -> bool:
+        """Send a JSON payload over the WebSocket, queuing if not yet connected.
+
+        Returns True on success, False if the socket is unavailable or an
+        error occurs so callers can surface failures instead of silently
+        reporting success.
+        """
         import websockets as _wsexc
         ws = self._ws
         if not ws:
             logger.debug("SimpleX: WS not connected, dropping outbound command")
-            return
+            return False
         try:
             await ws.send(json.dumps(payload))
+            return True
         except _wsexc.ConnectionClosed:
             logger.warning("SimpleX: WS closed while sending")
+            return False
         except Exception as e:
             logger.warning("SimpleX: WS send error: %s", e)
+            return False
 
     async def send(
         self,
@@ -515,7 +523,12 @@ class SimplexAdapter(BasePlatformAdapter):
             "cmd": cmd_str,
         }
 
-        await self._send_ws(payload)
+        ok = await self._send_ws(payload)
+        if not ok:
+            return SendResult(
+                success=False,
+                error="SimpleX: WebSocket send failed — connection unavailable or closed",
+            )
         return SendResult(success=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
