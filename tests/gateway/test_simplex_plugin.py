@@ -242,7 +242,8 @@ async def test_send_when_ws_not_connected_does_not_crash():
     adapter = SimplexAdapter(cfg)
     # No _ws assigned — _send_ws should drop quietly
     result = await adapter.send("contact-42", "hi")
-    assert result.success is True  # send() always returns success — fire-and-forget
+    assert result.success is False
+    assert result.error is not None
 
 
 # ---------------------------------------------------------------------------
