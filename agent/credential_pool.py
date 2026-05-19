@@ -238,13 +238,15 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
 def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if not message:
         return None
+    _MAX_DELAY = 3600.0
     delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
     if delay_match:
         value = float(delay_match.group(1))
-        return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+        raw = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+        return min(raw, _MAX_DELAY)
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
-        return float(sec_match.group(1))
+        return min(float(sec_match.group(1)), _MAX_DELAY)
     return None
 
 
