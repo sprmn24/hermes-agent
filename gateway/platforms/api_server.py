@@ -74,8 +74,8 @@ def _hermes_version() -> str:
         from importlib.metadata import version
 
         return version("hermes-agent")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("[api_server] package version lookup failed: %s", exc)
     try:
         from hermes_cli import __version__
 
@@ -173,8 +173,8 @@ def _normalize_chat_content(
                             part = str(text)[:MAX_NORMALIZED_TEXT_LENGTH]
                             parts.append(part)
                             total_len += len(part)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning("[api_server] chat content text normalization failed: %s", exc)
                 # Silently skip image_url / other non-text parts
             elif isinstance(item, list):
                 nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
@@ -528,8 +528,8 @@ class ResponseStore:
         """Close the database connection."""
         try:
             self._conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[api_server] DB connection close failed: %s", exc)
 
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
@@ -857,8 +857,8 @@ class APIServerAdapter(BasePlatformAdapter):
             profile = get_active_profile_name()
             if profile and profile not in {"default", "custom"}:
                 return profile
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[api_server] active profile name lookup failed: %s", exc)
         return "hermes-agent"
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
@@ -2254,8 +2254,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent is not None:
                 try:
                     agent.interrupt("SSE client disconnected")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] agent interrupt on SSE disconnect failed: %s", exc)
             if not agent_task.done():
                 agent_task.cancel()
                 try:
@@ -2277,8 +2277,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
                 await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
                 await response.write(b"data: [DONE]\n\n")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[api_server] SSE error chunk write failed: %s", exc)
 
         return response
 
@@ -2749,8 +2749,8 @@ class APIServerAdapter(BasePlatformAdapter):
                                 if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
                                     _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
                             _item["arguments"] = json.dumps(_args)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("[api_server] tool call argument truncation failed: %s", exc)
                 elif _item.get("type") == "function_call_output":
                     _output = _item.get("output", [])
                     if isinstance(_output, list) and _output:
@@ -2826,8 +2826,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent is not None:
                 try:
                     agent.interrupt("SSE client disconnected")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] agent interrupt on SSE disconnect failed: %s", exc)
             if not agent_task.done():
                 agent_task.cancel()
                 try:
@@ -2845,8 +2845,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent is not None:
                 try:
                     agent.interrupt("SSE task cancelled")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] agent interrupt on SSE cancel failed: %s", exc)
             if not agent_task.done():
                 agent_task.cancel()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
@@ -2872,8 +2872,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "type": "response.failed",
                     "response": failed_env,
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[api_server] response.failed event write failed: %s", exc)
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
         return response
@@ -3805,8 +3805,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return
             try:
                 loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[api_server] run stream event dispatch failed: %s", exc)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
@@ -3939,8 +3939,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": time.time(),
                     "delta": delta,
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[api_server] message.delta event write failed: %s", exc)
 
         self._set_run_status(
             run_id,
@@ -3985,8 +3985,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     try:
                         loop.call_soon_threadsafe(q.put_nowait, event)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("[api_server] approval event dispatch failed: %s", exc)
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars
@@ -4021,13 +4021,13 @@ class APIServerAdapter(BasePlatformAdapter):
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.warning("[api_server] session key reset failed: %s", exc)
                             if session_tokens:
                                 try:
                                     clear_session_vars(session_tokens)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.warning("[api_server] session vars clear failed: %s", exc)
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -4081,8 +4081,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         "run_id": run_id,
                         "timestamp": time.time(),
                     })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] run.cancelled event publish failed: %s", exc)
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
@@ -4099,8 +4099,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": time.time(),
                         "error": str(exc),
                     })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] run.failed event publish failed: %s", exc)
             finally:
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
@@ -4111,13 +4111,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     from tools.approval import unregister_gateway_notify
 
                     unregister_gateway_notify(approval_session_key)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] approval session unregister failed: %s", exc)
                 # Sentinel: signal SSE stream to close
                 try:
                     q.put_nowait(None)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] SSE stream sentinel put failed: %s", exc)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
@@ -4283,8 +4283,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "choice": choice,
                     "resolved": resolved,
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[api_server] approval response event publish failed: %s", exc)
 
         return web.json_response({
             "object": "hermes.run.approval_response",
@@ -4311,8 +4311,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if agent is not None:
             try:
                 agent.interrupt("Stop requested via API")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[api_server] agent interrupt on stop request failed: %s", exc)
 
         if task is not None and not task.done():
             task.cancel()
@@ -4351,8 +4351,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     approval_session_key = self._run_approval_sessions.get(run_id)
                     if approval_session_key:
                         unregister_gateway_notify(approval_session_key)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[api_server] approval session unregister on stop failed: %s", exc)
                 self._run_streams.pop(run_id, None)
                 self._run_streams_created.pop(run_id, None)
                 self._active_run_agents.pop(run_id, None)
