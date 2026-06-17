@@ -164,6 +164,7 @@ const EMPTY_STATE: DesktopBootstrapState = {
   manifest: null,
   stages: {},
   error: null,
+  cancelled: false,
   log: [],
   startedAt: null,
   completedAt: null,
@@ -223,7 +224,12 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   }
 
   if (ev.type === 'failed') {
-    return { ...state, active: false, error: ev.error || 'unknown error' }
+    return {
+      ...state,
+      active: false,
+      error: ev.error || 'unknown error',
+      cancelled: ev.error === 'bootstrap cancelled by user'
+    }
   }
 
   if (ev.type === 'unsupported-platform') {
@@ -249,6 +255,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [logPath, setLogPath] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -314,6 +321,25 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       setLogOpen(true)
     }
   }, [state.error])
+
+  // Real failures (not user cancellation) get a transcript saved to disk by
+  // main.cjs -- fetch the actual path instead of assuming the Windows default.
+  useEffect(() => {
+    if (!state.error || state.cancelled) {
+      return
+    }
+
+    window.hermesDesktop
+      ?.getRecentLogs?.()
+      .then(result => {
+        if (result?.path) {
+          setLogPath(result.path)
+        }
+      })
+      .catch(() => {
+        // ignore -- footer falls back to the hardcoded default path
+      })
+  }, [state.error, state.cancelled])
 
   // Mount logic: show whenever a bootstrap is in flight, completed-with-error,
   // or actively running with a manifest. Hide entirely after a successful
@@ -406,11 +432,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   ).length
 
   const totalCount = stages.length
-  const failed = Boolean(state.error)
-  // Count the running stage as half-done so the bar advances *during* a long
-  // stage instead of sitting frozen at the last completed step while its logs
-  // stream (e.g. "0 of 2" pinned at 0% for the whole first stage).
-  const progressUnits = completedCount + (!failed && currentStage ? 0.5 : 0)
+  const cancelled = Boolean(state.cancelled)
+  const failed = Boolean(state.error) && !cancelled
+  const progressUnits = completedCount + (!failed && !cancelled && currentStage ? 0.5 : 0)
   const progressPct = totalCount > 0 ? Math.round((progressUnits / totalCount) * 100) : 0
   const currentStartedAt = currentStage ? state.stages[currentStage]?.startedAt : null
   const currentElapsed = typeof currentStartedAt === 'number' ? formatElapsed(now - currentStartedAt) : ''
@@ -421,10 +445,16 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
         {/* Header -- always visible, never scrolls */}
         <div className="flex-shrink-0 p-8 pb-4">
           <h2 className="text-2xl font-semibold tracking-tight">
-            {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
+            {cancelled
+              ? 'Installation cancelled'
+              : failed
+                ? copy.failedTitle
+                : state.active
+                  ? copy.settingUpTitle
+                  : copy.finishingTitle}
           </h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            {failed ? copy.failedDesc : copy.activeDesc}
+            {cancelled ? null : failed ? copy.failedDesc : copy.activeDesc}
           </p>
         </div>
 
@@ -540,13 +570,38 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           </div>
         )}
 
+        {/* Cancelled footer: only way forward is to retry. */}
+        {cancelled && (
+          <div className="flex-shrink-0 bg-card p-4">
+            <div className="flex items-center justify-end">
+              <Button
+                onClick={async () => {
+                  try {
+                    await window.hermesDesktop?.resetBootstrap?.()
+                  } catch {
+                    // best-effort -- continue with reload regardless
+                  }
+
+                  window.location.reload()
+                }}
+                size="sm"
+                variant="default"
+              >
+                Retry
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Footer -- always visible, never scrolls; only renders on failure */}
         {failed && (
           <div className="flex-shrink-0 bg-card p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
                 {copy.transcriptSaved}{' '}
-                <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">%LOCALAPPDATA%\hermes\logs\</code>
+                <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">
+                  {logPath || '%LOCALAPPDATA%\\hermes\\logs\\'}
+                </code>
               </span>
               <div className="flex gap-2">
                 <Button
