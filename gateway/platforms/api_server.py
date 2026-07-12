@@ -1397,9 +1397,19 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
-        """GET /health — simple health check."""
+        """GET /health — simple health check.
+
+        Returns status "degraded" (HTTP 200) when the gateway is in draining
+        state so load balancers and health probes can distinguish a draining
+        instance from a fully healthy one without parsing the detailed endpoint.
+        """
+        from gateway.status import read_runtime_status
+
+        runtime = read_runtime_status() or {}
+        gw_state = runtime.get("gateway_state")
+        status = "degraded" if gw_state == "draining" else "ok"
         return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
+            {"status": status, "platform": "hermes-agent", "version": _hermes_version()}
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":

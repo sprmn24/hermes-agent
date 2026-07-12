@@ -1198,7 +1198,10 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())
-                    return True, body
+                    # A "degraded" status means the gateway is draining — treat it
+                    # as not alive so callers don't route new work to it.
+                    alive = body.get("status") not in {"degraded", "error"}
+                    return alive, body
         except Exception:
             continue
     return False, None

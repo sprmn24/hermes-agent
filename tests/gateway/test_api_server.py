@@ -736,6 +736,36 @@ class TestHealthEndpoint:
             assert data["platform"] == "hermes-agent"
             assert data.get("version")
 
+    @pytest.mark.asyncio
+    async def test_health_returns_degraded_when_draining(self, adapter):
+        """GET /health must return status="degraded" when the gateway is in
+        draining state so load balancers stop routing new requests to it."""
+        app = _create_app(adapter)
+        with patch(
+            "gateway.status.read_runtime_status",
+            return_value={"gateway_state": "draining"},
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "degraded"
+                assert data["platform"] == "hermes-agent"
+
+    @pytest.mark.asyncio
+    async def test_health_returns_ok_when_running(self, adapter):
+        """GET /health returns status="ok" in normal running state."""
+        app = _create_app(adapter)
+        with patch(
+            "gateway.status.read_runtime_status",
+            return_value={"gateway_state": "running"},
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "ok"
+
 
 # ---------------------------------------------------------------------------
 # /health/detailed endpoint
