@@ -2363,3 +2363,62 @@ class TestStripOrphanCloseTags:
             assert tag not in consumer._accumulated
         assert "trailing prose" in consumer._accumulated
         assert "more" in consumer._accumulated
+
+
+# ── UTF-16 chunk split regression (#62901) ───────────────────────────────
+
+
+class TestUtf16ChunkSplit:
+    """Regression for the _cp_budget / split_at bug: when rfind("\n") finds
+    no newline, the fallback split must use _cp_budget (codepoint offset)
+    not the raw platform limit (UTF-16 units), to avoid slicing mid-emoji
+    and emitting oversized chunks."""
+
+    @staticmethod
+    def _utf16_len(s: str) -> int:
+        """Return the number of UTF-16 code units for string ``s``.
+
+        Emoji and other characters outside the BMP require 2 code units
+        (a surrogate pair) each; BMP characters require 1.
+        """
+        return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
+
+    def test_emoji_only_no_newline_chunks_within_limit(self):
+        """Emoji-only input with no newlines must not produce any chunk
+        whose UTF-16 length exceeds the requested limit."""
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        emoji = "🎉" * 20  # 20 emojis = 40 UTF-16 units; no newlines
+        limit = 10  # 5 emojis per chunk
+
+        chunks = GatewayStreamConsumer._split_text_chunks(
+            emoji, limit, self._utf16_len
+        )
+
+        # Every chunk must fit within the limit.
+        for i, chunk in enumerate(chunks):
+            chunk_len = self._utf16_len(chunk)
+            assert chunk_len <= limit, (
+                f"chunk {i} has utf16_len={chunk_len} > limit={limit}: {chunk!r}"
+            )
+
+        # Concatenating the chunks must reconstruct the original string
+        # (no characters dropped, no extra characters added).
+        assert "".join(chunks) == emoji
+
+    def test_emoji_only_no_newline_all_chars_preserved(self):
+        """Each chunk is a slice of the original — no characters are lost or
+        duplicated when the input has no newline boundaries."""
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        emoji = "😀😃😄😁😆😅😂🤣😊😇" * 3  # 30 emojis, no newlines
+        limit = 8  # 4 emojis per chunk (8 UTF-16 units)
+
+        chunks = GatewayStreamConsumer._split_text_chunks(
+            emoji, limit, self._utf16_len
+        )
+
+        assert chunks  # must produce at least one chunk
+        assert "".join(chunks) == emoji
+        for chunk in chunks:
+            assert self._utf16_len(chunk) <= limit
