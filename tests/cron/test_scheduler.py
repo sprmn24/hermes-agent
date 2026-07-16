@@ -463,6 +463,25 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_targets({"deliver": []}) == []
 
+    def test_channel_resolution_failure_logs_warning(self, caplog):
+        """resolve_channel_name() raising must log a warning and fall back to raw chat_id."""
+        import logging
+        from cron.scheduler import _resolve_delivery_target
+
+        job = {"deliver": "whatsapp:Alice (dm)"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            side_effect=RuntimeError("directory unavailable"),
+        ):
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                result = _resolve_delivery_target(job)
+
+        assert result["chat_id"] == "Alice (dm)"
+        assert any(
+            "Failed to resolve channel name" in r.message
+            for r in caplog.records
+        ), f"Expected warning not found in: {[r.message for r in caplog.records]}"
+
 
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""
