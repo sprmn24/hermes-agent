@@ -220,3 +220,20 @@ class TestPatchFailureEscalation:
         assert "failure #" not in hint, (
             f"task_B's hint cross-contaminated from task_A: {hint!r}"
         )
+
+    def test_failure_count_capped_at_ten(self, hermes_home, tmp_path, fresh_tracker):
+        """_record_patch_failure must not exceed 10 regardless of call count."""
+        from tools.file_tools import _record_patch_failure, _patch_failure_tracker
+
+        task_id = "cap_test_task"
+        resolved_path = str(tmp_path / "cap_target.py")
+
+        results = []
+        for _ in range(15):
+            count = _record_patch_failure(task_id, resolved_path)
+            results.append(count)
+
+        assert results[-1] == 10, f"Expected cap of 10, got {results[-1]}"
+        assert max(results) == 10, f"Count exceeded cap: {max(results)}"
+        stored = _patch_failure_tracker.get(task_id, {}).get(resolved_path)
+        assert stored == 10, f"Stored value should be capped at 10, got {stored}"
