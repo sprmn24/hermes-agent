@@ -239,6 +239,29 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+
+class TestComputeGraceSeconds:
+    def test_croniter_failure_logs_warning(self, caplog):
+        """_compute_grace_seconds must log a warning and return MIN_GRACE when croniter raises."""
+        import logging
+        import cron.jobs as jobs_mod
+        from unittest.mock import patch, MagicMock
+        from cron.jobs import _compute_grace_seconds
+
+        schedule = {"kind": "cron", "expr": "0 */6 * * *"}
+        bad_croniter = MagicMock(side_effect=RuntimeError("parse error"))
+        with patch("cron.jobs.croniter", bad_croniter, create=True), \
+             patch("cron.jobs.HAS_CRONITER", True):
+            with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+                result = _compute_grace_seconds(schedule)
+
+        assert result == 120
+        assert any(
+            "Failed to compute grace seconds" in r.message
+            for r in caplog.records
+        ), f"Expected warning not found in: {[r.message for r in caplog.records]}"
+
+
 class TestJobCRUD:
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
