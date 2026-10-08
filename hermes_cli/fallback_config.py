@@ -115,9 +115,10 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+def _entry_identity(entry: dict[str, Any], configured: set[str]) -> tuple[str, str, str]:
+    provider = str(entry.get("provider") or "").strip()
     return (
-        _normalize_provider_id(str(entry.get("provider") or "").strip()),
+        provider.lower() if provider.lower() in configured else _normalize_provider_id(provider),
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
     )
@@ -129,14 +130,21 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     ``fallback_providers`` remains the primary source of truth and keeps its order. Legacy
     ``fallback_model`` entries are appended afterwards unless they target the same
     provider/model/base_url route as an earlier entry. The returned list always contains fresh dict
-    copies.
+    copies. A provider id configured with an endpoint under ``providers:`` keeps its raw identity
+    instead of collapsing through a lossy alias, matching ``resolve_provider_full`` precedence.
     """
     config = config or {}
+    providers = config.get("providers")
+    configured = (
+        {name for name, value in providers.items()
+         if isinstance(value, dict) and (value.get("api") or value.get("url") or value.get("base_url"))}
+        if isinstance(providers, dict) else set()
+    )
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):
         for entry in _iter_fallback_entries(config.get(key)):
-            identity = _entry_identity(entry)
+            identity = _entry_identity(entry, configured)
             if identity not in seen:
                 seen.add(identity)
                 chain.append(entry)
