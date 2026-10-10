@@ -234,11 +234,21 @@ def _arm_deferred(gw):
     # A hygiene worker on the loop's default executor, never finished.
     gw._deferred_agent_workers = {asyncio.get_event_loop().create_future(): object()}
 
+def _arm_authority_claim(gw):
+    # A session authority's claim write still waiting on another process's writer (default executor):
+    # settle_gateway_runtime leaves it for recovery and the stop goes on.
+    from types import SimpleNamespace
+    from gateway.session_authority import LiveSession
+    live = LiveSession(SimpleNamespace(platform=None, user_id="u"), "route")
+    live.claiming = True
+    gw.session_authority = SimpleNamespace(sessions={"s": live}, pending_stops={}, runner=gw, profile_id="p")
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("arm", [_arm_cron, _arm_api, _arm_deferred], ids=["cron", "api", "deferred"])
+@pytest.mark.parametrize("arm", [_arm_cron, _arm_api, _arm_deferred, _arm_authority_claim],
+                         ids=["cron", "api", "deferred", "authority-claim"])
 async def test_live_writer_outside_the_executor_skips_the_session_db_close(monkeypatch, arm):
-    """A cron job, API-server run or deferred worker that outlived the drain must not have state.db
-    closed under it (#102198).
+    """A cron job, API-server run, deferred worker or session-authority write that outlived the drain
+    must not have state.db closed under it (#102198).
 
     None of them run on ``self._executor`` (scheduler pool / loop default executor), so the executor
     join above the close block never sees them; the close has to consult their counters too.

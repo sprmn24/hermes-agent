@@ -6,6 +6,8 @@ Transport attachment never constructs an agent or takes a turn lease.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 from dataclasses import asdict, dataclass, field
 from functools import partial
 import sqlite3
@@ -44,6 +46,11 @@ class LiveSession:
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
     # still see the claim as started, so no snapshot shows a terminal row without its completion.
     settling: dict = field(default_factory=dict)
+    # True from the start of the drain's off-loop claim write until the drain holds its result (and
+    # stamps it as the running execution in the same loop step) or, cancelled mid-write, has settled
+    # the head it claimed. The thread commits whether or not the drain still waits for it, so
+    # retirement and shutdown count this as live work.
+    claiming: bool = False
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -638,9 +645,43 @@ class SessionAuthority:
             self._require_admission_open()
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
-            row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id,
-                                      head=first['admission_id'] if first is not None else None)
+            row = await self._claim_off_loop(ref, live, first['admission_id'] if first is not None else None)
+            if row is None and first is None and any(
+                    r['status'] == 'queued' for r in list_session_admissions(self.db, session_id=ref.session_id)):
+                # Admitted while the write ran: its _schedule found this drain still running, so the
+                # drain re-reads instead of ending with that input queued.
+                return False, first
             return row, first
+
+    async def _claim_off_loop(self, ref, live, head):
+        """``claim_session_input`` in a worker thread, like settlement and cancellation: behind a held
+        writer it waits out its patience on every in-place retry, and on the loop that froze every
+        session. The thread commits whether or not its drain still waits, so a cancel landing
+        mid-write (asyncio.run's final sweep; retirement joins claims before it cancels) waits for the
+        result too: a head it claimed ends terminal unrun, settled like a Stop before bootstrap,
+        never left started for the next owner to find unknown and never requeued."""
+        write = asyncio.get_running_loop().run_in_executor(None, partial(
+            contextvars.copy_context().run, claim_session_input, self.db, epoch=self.epoch,
+            session_id=ref.session_id, head=head))
+        live.claiming = True
+        try:
+            # Shielded: cancelling the drain must not cancel the future and drop the thread's result.
+            return await asyncio.shield(write)
+        except asyncio.CancelledError:
+            while not write.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait({write})
+            row = write.result() if write.exception() is None else None
+            if row:
+                from gateway.session_settlement_recovery import settle_with_retry
+                await settle_with_retry(self, live, ref, row, '', 'interrupted', {
+                    'result': {'final_response': '', 'interrupted': True}, 'usage': {}}, {})
+                waiter = self.waiters.pop(row['admission_id'], None)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result('')
+            raise
+        finally:
+            live.claiming = False
 
     async def _drain(self, ref):
         from gateway.session_finite import execute_finite_admission

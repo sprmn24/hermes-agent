@@ -12,15 +12,28 @@ def executing_sessions(authority):
             yield sid, live, execution['execution_generation']
 
 
+def claiming_sessions(authority):
+    """Sessions whose claim write is still in flight off the loop (``LiveSession.claiming``)."""
+    return [sid for sid, live in getattr(authority, 'sessions', {}).items() if getattr(live, 'claiming', False)]
+
+
+def authority_writes(runner):
+    """Claim writes and tracked mutations still in flight. Both write state.db from the loop's
+    default executor, which the shutdown executor quiesce never joins."""
+    return sum(len(claiming_sessions(authority)) + len(mutation_tasks(authority))
+               for authority in all_authorities(runner))
+
+
 def uncounted_runtime_work(runner):
-    """Count claims absent from the ordinary agent map, including pre-bootstrap managed turns."""
+    """Count claims absent from the ordinary agent map, including pre-bootstrap managed turns and
+    claim writes still in flight."""
     running = getattr(runner, '_running_agents', {})
     authorities = all_authorities(runner)
     managed = sum(not worker.closed.is_set() for authority in authorities
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
-            + sum(len(mutation_tasks(authority)) for authority in authorities))
+            + authority_writes(runner))
 
 
 def persist_work_count(authority, _task=None):
@@ -98,7 +111,8 @@ async def join_authority_work(authority, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stop_authority_work(authority)
-        if not list(physical_workers(authority)) and not list(executing_sessions(authority)) and not mutation_tasks(authority):
+        if not (list(physical_workers(authority)) or list(executing_sessions(authority))
+                or claiming_sessions(authority) or mutation_tasks(authority)):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError('Profile workers did not stop; ownership retained')

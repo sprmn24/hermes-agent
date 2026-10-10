@@ -2075,23 +2075,23 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
-        # default executor) never touch self._executor, so the join above cannot see them. A writer that
-        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
-        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
-        # taken before the adapters were released; a run whose handler task was cancelled at disconnect
-        # has already left it, so that term under-counts — the live worker-scoped count below covers
-        # the cancelled-handler case (#116535).
-        _cron_live = self._active_cron_job_count()
-        _api_live = ctx.api_live
-        _api_worker_live = self._active_api_worker_count()
-        _deferred_live = ctx.deferred_count()
-        if _cron_live or _api_live or _api_worker_live or _deferred_live:
+        # Cron jobs (scheduler pool), API-server runs, deferred hygiene workers and session-authority claim and
+        # settlement writes (the last three on the loop's default executor) never touch self._executor, so the
+        # join above cannot see them. A writer that outlived the drain is mid-write for the same #101093
+        # reasons; the drain already spent its budget, so no second wait — leave the handles open (#102198).
+        # The API count is the snapshot taken before the adapters were released; a run whose handler task was
+        # cancelled at disconnect has already left it, so that term under-counts — the live worker-scoped
+        # count below covers the cancelled-handler case (#116535).
+        from gateway.session_runtime_workers import authority_writes
+        _cron_live, _api_live = self._active_cron_job_count(), ctx.api_live
+        _api_worker_live, _deferred_live = self._active_api_worker_count(), ctx.deferred_count()
+        _authority_live = authority_writes(self)
+        if _cron_live or _api_live or _api_worker_live or _deferred_live or _authority_live:
             logger.warning(
-                "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d API-server worker(s) / "
-                "%d deferred worker(s) still running after the executor quiesce — skipping the SessionDB "
-                "close/checkpoint, leaving state.db open for the live writer (#102198, #116535)",
-                _cron_live, _api_live, _api_worker_live, _deferred_live,
+                "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d API-server worker(s) / %d deferred "
+                "worker(s) / %d session-authority write(s) still running after the executor quiesce — skipping "
+                "the SessionDB close/checkpoint, leaving state.db open for the live writer (#102198, #116535)",
+                _cron_live, _api_live, _api_worker_live, _deferred_live, _authority_live,
             )
             return
         _step = GatewayShutdownMixin._quiet_step
