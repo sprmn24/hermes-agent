@@ -143,7 +143,13 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
-def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
+_ANY_HEAD = object()
+
+
+def claim_session_input(db, *, epoch: int, session_id: str, head=_ANY_HEAD) -> dict | bool | None:
+    """Claim the queued head. ``head`` is the admission id the caller's preclaim checks validated
+    (None: it saw nothing queued); if the head is another row by the time this write runs, nothing
+    is claimed and False tells the caller to re-read and validate the row that is now first."""
     def write(conn):
         _epoch(conn, epoch)
         session = _session(conn, session_id)
@@ -157,6 +163,8 @@ def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
         if blocked or workers:
             return None
         row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq LIMIT 1", (session_id,)).fetchone()
+        if head is not _ANY_HEAD and (row['admission_id'] if row is not None else None) != head:
+            return False
         if row is None:
             return None
         generation = session['runtime_generation'] + 1

@@ -137,6 +137,67 @@ async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip
     assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
 
 
+@pytest.mark.asyncio
+async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_claim_to_its_successor(
+        tmp_path, monkeypatch):
+    """Cancellation commits from a worker thread, so it can land after the head passed every preclaim
+    check (and was re-read as queued) and before the claim's write: the claim takes the validated
+    head or nothing, never the successor."""
+    import threading
+    from gateway import session_authority, session_finite, session_hosted_transport, session_local_recovery
+    from gateway import session_operator
+    from gateway.config import Platform
+
+    db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
+    monkeypatch.setattr(session_local_recovery, 'restore_local_session', lambda authority, sid: None)
+    monkeypatch.setattr(session_local_recovery, 'reopen_local_session', lambda authority, ref: None)
+    validated, executed = [], []
+    go, committed = threading.Event(), threading.Event()
+
+    def check_remote_hosted_admission(authority, ref, row):
+        validated.append(row['request_id'])
+        if row['request_id'] == 'hosted:B':
+            raise RuntimeStoreError('permission_denied')  # B's own source binding is revoked
+        return True
+    monkeypatch.setattr(session_hosted_transport, 'check_remote_hosted_admission', check_remote_hosted_admission)
+    cancel_session_input, check_local_input = session_authority.cancel_session_input, session_operator.check_local_input
+
+    def cancel_in_its_worker_thread(*args, **kwargs):
+        go.wait(5)
+        try:
+            return cancel_session_input(*args, **kwargs)
+        finally:
+            committed.set()
+    monkeypatch.setattr(session_authority, 'cancel_session_input', cancel_in_its_worker_thread)
+
+    def checked_head_then_cancelled(authority, ref, row, **kwargs):
+        check_local_input(authority, ref, row, **kwargs)
+        if row['request_id'] == 'hosted:A':
+            go.set()  # A is validated and re-read as queued; its cancellation commits now
+            committed.wait(5)
+    monkeypatch.setattr(session_operator, 'check_local_input', checked_head_then_cancelled)
+
+    async def execute(authority, ref, row):
+        executed.append(row['request_id'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    schedule = authority._schedule
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        head = await _submit(authority, 'hosted:A')
+        await _submit(authority, 'hosted:B')
+        cancel = asyncio.create_task(authority.cancel_queued(ACTOR, REF, head.admission_id))
+        await asyncio.sleep(0.1)  # the Delete is in flight in cancel_queued's worker thread
+        schedule(REF)
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+        await asyncio.wait_for(cancel, 5)
+
+    assert executed == [], 'the successor reached execution without its own hosted validation'
+    assert validated == ['hosted:A', 'hosted:B']
+    statuses = {r['request_id']: r['status'] for r in list_session_admissions(db, session_id='s', pending_only=False)}
+    assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
+
+
 def _wire_turn_agent(authority, generation, agent):
     """Run the real per-turn agent wiring with this authority as the turn's approval owner."""
     from gateway.run_turn_runner import TurnRunner

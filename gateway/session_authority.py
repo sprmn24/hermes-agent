@@ -636,7 +636,10 @@ class SessionAuthority:
                 from gateway.session_api_turn import check_api_turn
                 check_api_turn(self, ref, first['payload'])
             self._require_admission_open()
-            row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id)
+            # The row these checks validated, never whichever is first when the write runs: a
+            # cancellation commits from a worker thread and can advance the FIFO at any point.
+            row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id,
+                                      head=first['admission_id'] if first is not None else None)
             return row, first
 
     async def _drain(self, ref):
