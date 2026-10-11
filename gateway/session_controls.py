@@ -296,9 +296,9 @@ class AuthorityConnection:
                 policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
             if title:
-                await asyncio.to_thread(title_new_session, self.authority, ref, title)
+                await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:
-                await asyncio.to_thread(self.authority.db.set_session_hidden, ref.session_id, True)
+                await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):

@@ -245,7 +245,8 @@ class SessionAuthority:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
                     from gateway.session_acp_lifecycle import end_idle_acp_session
-                    await asyncio.to_thread(end_idle_acp_session, self, session_id)
+                    from gateway.session_runtime_workers import tracked_write
+                    await tracked_write(self, partial(end_idle_acp_session, self, session_id))
                 return
         raise RuntimeStoreError('not_found')
 
@@ -331,10 +332,10 @@ class SessionAuthority:
         payload = await prepare_native(self.runner, event)
         self._require_admission_open()
         source = restore_native(payload).source
-        ref = self._publish_route(source, *await asyncio.to_thread(self._reserve_route, source))
+        from gateway.session_runtime_workers import tracked_write
+        ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
-        from gateway.session_runtime_workers import tracked_write
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
@@ -754,9 +755,11 @@ class SessionAuthority:
                     from gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
                 # The first real turn reopens a finalized row (#85303): mounts are reads, and
-                # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop.
+                # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop,
+                # tracked so retirement and the shutdown close gate count it.
                 from gateway.session_local_recovery import reopen_local_session
-                await asyncio.to_thread(reopen_local_session, self, ref)
+                from gateway.session_runtime_workers import tracked_write
+                await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
                 from gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
@@ -835,7 +838,8 @@ class SessionAuthority:
                 from gateway.session_acp_lifecycle import end_idle_acp_session
                 # A write (idle check + stamp in one txn): off-loop. Input scheduled meanwhile set
                 # ``rescan`` on this still-live drain, which must claim it rather than exit.
-                await asyncio.to_thread(end_idle_acp_session, self, ref.session_id)
+                from gateway.session_runtime_workers import tracked_write
+                await tracked_write(self, partial(end_idle_acp_session, self, ref.session_id))
                 if live.rescan:
                     continue
                 return
