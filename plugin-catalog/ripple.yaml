@@ -1,0 +1,23 @@
+name: ripple
+repo: https://github.com/sprmn24/hermes-ripple
+sha: a9a7f7e335f693f0a844adb7c25987837c7b7c40
+subdir: ""
+title: Ripple
+description: "Keeps Hermes work consistent when facts change. Sources, calculations, artifacts and human approvals form an explicit dependency graph: update a source value and every quote, report or check built on it turns stale, approvals bound to the old revision are revoked, and a pre_tool_call guard refuses to publish stale work until it is rebuilt and re-approved by a human in the Ripple Desktop pane. Disclosures: no network calls; state lives in a SQLite database under the profile's plugin data directory; published files are written to a releases folder in the same directory; the Desktop pane talks only to the plugin's own dashboard namespace via ctx.rest; the pre_tool_call hook only acts on ripple_publish; approvals cannot be created by the agent, only through the pane; no credentials, telemetry or self-update."
+maintainer: sprmn24
+tier: community
+category: automation
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - ripple_put_source
+    - ripple_derive
+    - ripple_impact
+    - ripple_rebuild
+    - ripple_publish
+    - ripple_graph
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
